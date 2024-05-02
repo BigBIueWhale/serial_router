@@ -85,8 +85,8 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
     let handle = tokio::spawn(async move {
         let bytes_to_send = [0x5, 0x6, 0x7, 0x8];
         loop {
-            for (idx, port_stream) in port_streams.iter_mut().enumerate() {
-                for byte in &bytes_to_send {
+            for byte in &bytes_to_send {
+                for (idx, port_stream) in port_streams.iter_mut().enumerate() {
                     let start_time = Instant::now();
                     if let Err(e) = port_stream.write_all(&[*byte]).await {
                         eprintln!("Error writing to port {}: {}", ports[idx], e);
@@ -104,12 +104,12 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
                                 break;
                             },
                             Err(_) => {
-                                eprintln!("Timed out waiting for response from port {}", ports[idx]);
+                                eprintln!("Timed out waiting for response to 0x{:x} from port {}", byte, ports[idx]);
                                 break;
                             },
                         }
 
-                        if buf.ends_with(b"\r\n") {
+                        if buf.ends_with(b"\n\r") {
                             break;
                         }
                     }
