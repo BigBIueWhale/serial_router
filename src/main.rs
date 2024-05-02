@@ -135,8 +135,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
 
                         if let Ok(data_string) = serde_json::to_string(&json) {
                             if tx.send(data_string).await.is_err() {
-                                // Probably because Linux errors when sending on localhost
-                                //eprintln!("Error sending data via channel");
+                                eprintln!("Error sending data via channel");
                                 break;
                             }
                         }
@@ -149,7 +148,8 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
     let udp_handle = tokio::spawn(async move {
         while let Some(data) = rx.recv().await {
             if socket.send(data.as_bytes()).await.is_err() {
-                eprintln!("Error sending data via UDP");
+                // Probably because Linux errors when sending on localhost
+                //eprintln!("Error sending data via UDP");
             }
         }
     });
