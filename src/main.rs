@@ -142,8 +142,8 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
                         }
                     }
                 }
-                println!("\n");
             }
+            print!("\n");
         }
     });
 
