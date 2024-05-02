@@ -71,7 +71,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
     let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
     for port_name in ports {
-        let port = tokio_serial::new(port_name.clone(), 9600).open_native_async()?;
+        let port = tokio_serial::new(port_name.clone(), 115200).open_native_async()?;
         let mut buf = vec![0; 1024];
         let mut port_stream = SerialStream::from(port);
         let tx_clone = tx.clone();
@@ -81,6 +81,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
             loop {
                 match port_stream.read(&mut buf).await {
                     Ok(n) if n > 0 => {
+                        println!("Read {} bytes.", n);
                         let encoded_data = STANDARD.encode(&buf[..n]);
                         let json = serde_json::json!({
                             "port": port_name.clone(),
