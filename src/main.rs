@@ -132,6 +132,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
                             "data": encoded_data,
                             "duration_microseconds": time_elapsed.as_micros()
                         });
+                        println!("json: {}", json);
 
                         if let Ok(data_string) = serde_json::to_string(&json) {
                             if tx.send(data_string).await.is_err() {
@@ -141,6 +142,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
                         }
                     }
                 }
+                println!("\n");
             }
         }
     });
