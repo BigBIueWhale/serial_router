@@ -126,10 +126,11 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
                     if total_read > 0 {
                         let time_elapsed = Instant::now().duration_since(start_time);
                         let data = &shared_buffer[..total_read];
-                        let encoded_data = STANDARD.encode(data);
+                        let as_string = String::from_utf8_lossy(data).trim_matches(|c| c == '\n' || c == '\r').to_string();
                         let json = serde_json::json!({
+                            "char": format!("{}", byte_to_send),
                             "port": ports[idx],
-                            "data": encoded_data,
+                            "data": as_string,
                             "duration_microseconds": time_elapsed.as_micros()
                         });
                         println!("json: {}", json);
