@@ -4,7 +4,7 @@ use serde_json;
 use serialport::available_ports;
 use std::io::{self};
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::{net::UdpSocket, signal, sync::mpsc};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
@@ -74,72 +74,75 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
     let (tx, mut rx) = mpsc::channel(100);
 
     let mut port_streams: Vec<SerialStream> = Vec::new();
-    println!("Iterating through ports");
     for port_name in &ports {
         let port = tokio_serial::new(port_name.clone(), 115200).open_native_async()?;
         port_streams.push(SerialStream::from(port));
     }
 
-    println!("Opened all ports");
-
     let handle = tokio::spawn(async move {
-        let bytes_to_send = [0x5, 0x6, 0x7, 0x8];
+        let mut shared_buffer = vec![0u8; 0xffff];
+        let timeout = tokio::time::Duration::from_millis(100); // Overall timeout for each read operation
+
         loop {
-            for byte in &bytes_to_send {
-                for (idx, port_stream) in port_streams.iter_mut().enumerate() {
-                    let start_time = Instant::now();
-                    if let Err(e) = port_stream.write_all(&[*byte]).await {
-                        eprintln!("Error writing to port {}: {}", ports[idx], e);
-                        continue;
-                    }
+            for (idx, port_stream) in port_streams.iter_mut().enumerate() {
+                let start_time = Instant::now();
+                let mut total_read = 0;
 
-                    let mut buf = Vec::new();
-                    loop {
-                        let mut temp_buf = [0; 1];
-                        match tokio::time::timeout(tokio::time::Duration::from_millis(100), port_stream.read(&mut temp_buf)).await {
-                            Ok(Ok(0)) => break,
-                            Ok(Ok(_)) => buf.extend_from_slice(&temp_buf),
-                            Ok(Err(e)) => {
-                                eprintln!("Error reading from port {}: {}", ports[idx], e);
-                                break;
-                            },
-                            Err(_) => {
-                                eprintln!("Timed out waiting for response to 0x{:x} from port {}", byte, ports[idx]);
-                                break;
-                            },
-                        }
-
-                        if buf.ends_with(b"\n\r") {
+                loop  {
+                    if total_read >= 2 {
+                        // Check if ends with "\n\r" like in the ICD
+                        if shared_buffer[total_read - 2] == b'\n' && shared_buffer[total_read - 1] == b'\r' {
                             break;
                         }
                     }
-
-                    let end_time = Instant::now();
-                    let duration = end_time.duration_since(start_time);
-
-                    let encoded_data = STANDARD.encode(&buf);
-                    let json = serde_json::json!({
-                        "port": ports[idx].clone(),
-                        "data": encoded_data,
-                        "duration": duration.as_millis()
-                    });
-
-                    if let Ok(data) = serde_json::to_string(&json) {
-                        let _ = tx.send(data).await;
+                    let time_elapsed = Instant::now().duration_since(start_time);
+                    if time_elapsed >= timeout {
+                        eprintln!("Timeout reached for port {}", ports[idx]);
+                        break;
                     }
 
-                    buf.clear();
+                    let time_remaining = timeout - time_elapsed;
+                    match tokio::time::timeout(time_remaining, port_stream.read(&mut shared_buffer[total_read..])).await {
+                        Ok(Ok(n)) if n == 0 => break,
+                        Ok(Ok(n)) => total_read += n,
+                        Ok(Err(e)) => {
+                            eprintln!("Error reading from port {}: {}", ports[idx], e);
+                            break;
+                        },
+                        Err(_) => {
+                            eprintln!("Timed out waiting for more data from port {}", ports[idx]);
+                            break;
+                        }
+                    }
+                }
+
+                if total_read > 0 {
+                    let time_elapsed = Instant::now().duration_since(start_time);
+                    let data = &shared_buffer[..total_read];
+                    let encoded_data = STANDARD.encode(data);
+                    let json = serde_json::json!({
+                        "port": ports[idx],
+                        "data": encoded_data,
+                        "duration": time_elapsed.as_millis()
+                    });
+
+                    if let Ok(data_string) = serde_json::to_string(&json) {
+                        if tx.send(data_string).await.is_err() {
+                            eprintln!("Error sending data via channel");
+                            break;
+                        }
+                    }
                 }
             }
         }
     });
 
     tokio::spawn(async move {
-        println!("Starting UDP sending task...");
         while let Some(data) = rx.recv().await {
-            let _ = socket.send(data.as_bytes()).await;
+            if socket.send(data.as_bytes()).await.is_err() {
+                eprintln!("Error sending data via UDP");
+            }
         }
-        println!("UDP sending task finished.");
     });
 
     handle.await?;
