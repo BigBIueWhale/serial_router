@@ -84,8 +84,8 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
         let timeout = tokio::time::Duration::from_millis(100); // Overall timeout for each read operation
 
         loop {
-            for (idx, port_stream) in port_streams.iter_mut().enumerate() {
-                for byte_to_send in [0x5, 0x6, 0x7, 0x8] {
+            for byte_to_send in [0x5, 0x6, 0x7, 0x8] {
+                for (idx, port_stream) in port_streams.iter_mut().enumerate() {
                     match port_stream.write_all(&[byte_to_send]) {
                         Ok(()) => (),
                         Err(_) => println!("Error writing data to port index {}", idx)
@@ -135,7 +135,8 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
 
                         if let Ok(data_string) = serde_json::to_string(&json) {
                             if tx.send(data_string).await.is_err() {
-                                eprintln!("Error sending data via channel");
+                                // Probably because Linux errors when sending on localhost
+                                //eprintln!("Error sending data via channel");
                                 break;
                             }
                         }
