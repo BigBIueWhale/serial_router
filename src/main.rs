@@ -1,11 +1,12 @@
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
+use serde_json;
 use serialport::available_ports;
 use std::io::{self};
-use tokio::{net::UdpSocket, signal, sync::mpsc, task::JoinHandle};
+use std::time::Instant;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{net::UdpSocket, signal, sync::mpsc};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
-use tokio::io::AsyncReadExt;
-use serde_json;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,11 +26,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Type the numbers of the ports you want to listen on, separated by commas:");
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-    let selections: Vec<usize> = input.trim().split(',')
+    let selections: Vec<usize> = input
+        .trim()
+        .split(',')
         .filter_map(|s| s.trim().parse::<usize>().ok())
         .collect();
 
-    let selected_ports: Vec<String> = selections.into_iter()
+    let selected_ports: Vec<String> = selections
+        .into_iter()
         .filter(|&idx| idx > 0 && idx <= ports.len())
         .filter_map(|idx| ports.get(idx - 1).map(|p| p.port_name.clone()))
         .collect();
@@ -68,41 +72,67 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
     println!("UDP socket bound and connected.");
 
     let (tx, mut rx) = mpsc::channel(100);
-    let mut handles: Vec<JoinHandle<()>> = Vec::new();
 
-    for port_name in ports {
+    let mut port_streams: Vec<SerialStream> = Vec::new();
+    println!("Iterating through ports");
+    for port_name in &ports {
         let port = tokio_serial::new(port_name.clone(), 115200).open_native_async()?;
-        let mut buf = vec![0; 1024];
-        let mut port_stream = SerialStream::from(port);
-        let tx_clone = tx.clone();
+        port_streams.push(SerialStream::from(port));
+    }
 
-        let handle = tokio::spawn(async move {
-            println!("Listening on serial port: {}", port_name);
-            loop {
-                match port_stream.read(&mut buf).await {
-                    Ok(n) if n > 0 => {
-                        println!("Read {} bytes.", n);
-                        let encoded_data = STANDARD.encode(&buf[..n]);
-                        let json = serde_json::json!({
-                            "port": port_name.clone(),
-                            "data": encoded_data
-                        });
-                        if let Ok(data) = serde_json::to_string(&json) {
-                            let _ = tx_clone.send(data).await;
+    println!("Opened all ports");
+
+    let handle = tokio::spawn(async move {
+        let bytes_to_send = [0x5, 0x6, 0x7, 0x8];
+        loop {
+            for (idx, port_stream) in port_streams.iter_mut().enumerate() {
+                for byte in &bytes_to_send {
+                    let start_time = Instant::now();
+                    if let Err(e) = port_stream.write_all(&[*byte]).await {
+                        eprintln!("Error writing to port {}: {}", ports[idx], e);
+                        continue;
+                    }
+
+                    let mut buf = Vec::new();
+                    loop {
+                        let mut temp_buf = [0; 1];
+                        match tokio::time::timeout(tokio::time::Duration::from_millis(100), port_stream.read(&mut temp_buf)).await {
+                            Ok(Ok(0)) => break,
+                            Ok(Ok(_)) => buf.extend_from_slice(&temp_buf),
+                            Ok(Err(e)) => {
+                                eprintln!("Error reading from port {}: {}", ports[idx], e);
+                                break;
+                            },
+                            Err(_) => {
+                                eprintln!("Timed out waiting for response from port {}", ports[idx]);
+                                break;
+                            },
                         }
-                    },
-                    Ok(_) => (),
-                    Err(e) => {
-                        eprintln!("Error reading from {}: {}", port_name, e);
-                        break;
-                    },
+
+                        if buf.ends_with(b"\r\n") {
+                            break;
+                        }
+                    }
+
+                    let end_time = Instant::now();
+                    let duration = end_time.duration_since(start_time);
+
+                    let encoded_data = STANDARD.encode(&buf);
+                    let json = serde_json::json!({
+                        "port": ports[idx].clone(),
+                        "data": encoded_data,
+                        "duration": duration.as_millis()
+                    });
+
+                    if let Ok(data) = serde_json::to_string(&json) {
+                        let _ = tx.send(data).await;
+                    }
+
+                    buf.clear();
                 }
             }
-            println!("Stopped listening on serial port: {}", port_name);
-        });
-
-        handles.push(handle);
-    }
+        }
+    });
 
     tokio::spawn(async move {
         println!("Starting UDP sending task...");
@@ -112,10 +142,7 @@ async fn listen_to_ports(ports: Vec<String>) -> Result<(), Box<dyn std::error::E
         println!("UDP sending task finished.");
     });
 
-    // Wait for all tasks to complete
-    for handle in handles {
-        let _ = handle.await;
-    }
+    handle.await?;
 
     Ok(())
 }
